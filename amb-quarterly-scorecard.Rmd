@@ -1,0 +1,400 @@
+---
+title: "quarterly-processing"
+output: html_document
+date: '2022-06-29'
+---
+
+```{r Load Packages, echo = FALSE, warning = FALSE, message = FALSE}
+# # Load packages -----------------------------------------------------------------------------------
+suppressMessages({
+  memory.limit(size = 100000000)
+  library(readxl)
+  library(writexl)
+  library(plyr)
+  library(dplyr)
+  library(data.table)
+  library(zoo)
+  library(shiny)
+  library(shinydashboard)
+  library(shinydashboardPlus)
+  library(shinyWidgets)
+  library(htmlwidgets)
+  library(lubridate)
+  library(tcltk)
+  library(tidyverse)
+  library(plotly)
+  library(knitr)
+  library(kableExtra)
+  library(leaflet)
+  library(grid)
+  library(gridExtra)
+  library(eeptools)
+  library(ggQC)
+  library(zipcodeR)
+  library(utils)
+  library(scales)
+  library(chron)
+  library(bupaR)
+  library(shiny)
+  library(DT)
+  library(DiagrammeR)
+  library(shinyalert)
+  library(edeaR)
+  library(processmapR)
+  library(processmonitR)
+  library(processanimateR)
+  library(tidyr)
+  library(lubridate)
+  library(RColorBrewer)
+  library(DiagrammeR)
+  library(ggplot2)
+  library(leaflet)
+  library(readr)
+  library(highcharter)
+  library(ggforce) # for 'geom_arc_bar'
+  library(packcircles) # for packed circle graph
+  library(viridis)
+  library(ggiraph)
+  library(treemapify)
+  library(treemap)
+  library(broom)
+  library(extrafont)
+  library(tis) # for US holidays
+  library(vroom)
+  library(sjmisc)
+  library(tools)
+  library(here)
+  library(shinyBS)
+  library(shinyscreenshot)
+  library(fasttime)
+  library(shinycssloaders)
+  library(feather)
+  # library(zipcodeR)
+  library(formattable)
+  library(shinyjs)
+  library(janitor)
+  library(patchwork)
+  library(flexdashboard)
+  # library(tidyverse)
+  # library(viridis)
+  # library(hrbrthemes)
+  # library(plotly)
+  # install.packages("bsts")
+  library(bsts)
+  library(reactable)
+  # install.packages("reactablefmtr")
+  library(reactablefmtr)
+  library(svDialogs)
+  library(openxlsx)
+  library(flextable)
+  library(officedown)
+  library(officer)
+  library(magrittr)
+  library(webshot) 
+  library(png)
+  library(ggh4x)
+  library(RODBC)
+  library(DBI)
+  library(odbc)
+})
+
+
+```
+
+
+```{r Global Functions, echo = FALSE, warning = FALSE, message = FALSE}
+
+'%!in%' <- function(x,y)!('%in%'(x,y)) # Does not include
+not_all_na <- function(x) all(!is.na(x)) # Exclude columns with All NAs
+
+```
+
+
+```{r Import Raw Scheduling Data, echo = FALSE, warning = FALSE, message = FALSE}
+
+scheduling_data_raw <- readRDS("/nfs/data/Applications/Ambulatory/Data_Updated/historical_data.rds")
+# scheduling_data_raw <- readRDS("/nfs/data/Applications/Ambulatory/Data/historical_data.rds")
+
+scheduling_data_raw <- readRDS(file.choose())
+
+scheduling_data_raw <- scheduling_data_raw %>% 
+  filter(!Campus %in% c("MS NOW", "MSHP", "ONCOLOGY", "MSQ", "OTHER")) %>%
+  filter(!is.na(Campus)) %>%
+  mutate(Campus = case_when(Campus == "MSDD" ~ "MSDMG",
+                            TRUE ~ Campus)) %>%
+  mutate(Appt.WeekNum = lubridate::epiweek(Appt.DateYear),
+         Appt.YearQtr = as.yearqtr(Appt.DTTM),
+         Appt.Made.YearQtr = as.yearqtr(Appt.Made.DTTM),
+         Visit.Method  = case_when(Visit.Method == "IN PERSON" ~ 'IN PERSON',TRUE ~ 'TELEHEALTH'),
+         # New.PT2 = case_when(New.PT2 == "New" ~ 'New',TRUE ~ 'Established'),
+         # New.PT3 = case_when(New.PT3 == "TRUE" ~ 'New',TRUE ~ 'Established'),
+         Appt.Made.DateYear = as.Date(Appt.Made.DTTM, format="%Y-%m-%d"),
+         Appt.Made.MonthYear = format(as.Date(Appt.Made.DTTM, format="%m/%d/%Y"), "%Y-%m"),
+         Appt.Made.Year = format(as.Date(Appt.Made.DTTM, format="%m/%d/%Y"), "%Y"),
+         Appt.Made.Month = format(as.Date(Appt.Made.DTTM, format="%m/%d/%Y"), "%Y"),
+         Appt.Made.WeekNum = as.numeric(strftime(Appt.Made.DTTM, format = "%m")),
+         Session = ifelse(as.integer(sub(':.*', '', Time)) >= 12, 'PM', 'AM') )
+
+
+```
+
+
+```{r Important Referral Data, echo = FALSE, warning = FALSE, message = FALSE}
+
+referral_vol <- readRDS(file.choose())
+
+```
+
+
+```{r OBGYN Processing, echo = FALSE, warning = FALSE, message = FALSE}
+
+data_subset <- scheduling_data_raw %>%
+  filter(Campus.Specialty %in% c("OB/Gyn","Gynecology","Obstetrics","Maternal Fetal Medicine"))
+  
+```
+
+
+```{r Volume Processing, echo = FALSE, warning = FALSE, message = FALSE}
+
+monthly_vol <- data_subset %>%
+  filter(Appt.Status == "Arrived") %>%
+  mutate(Appt.MonNum = as.numeric(strftime(Appt.DateYear, format = "%m")),
+         Appt.Month = strftime(Appt.DateYear, format = "%b")) %>%
+  group_by(Campus, Department, Appt.Year, Appt.Month, Appt.YearQtr, Appt.MonthYear, Visit.Method) %>%
+  summarise(monthly_vol = n())
+
+monthly_vol_mshs <- scheduling_data_raw %>%
+  filter(Appt.Status == "Arrived") %>%
+  mutate(Appt.MonNum = as.numeric(strftime(Appt.DateYear, format = "%m")),
+         Appt.Month = strftime(Appt.DateYear, format = "%b")) %>%
+  group_by(Campus, Appt.Year, Appt.Month, Appt.YearQtr, Appt.MonthYear, Visit.Method) %>%
+  summarise(monthly_vol = n())
+
+```
+
+```{r}
+
+# dept_vol <- new_vol %>%
+#   filter(Appt.Year >= 2022) %>%
+#   mutate(Appt.YearQtr = as.character(Appt.YearQtr)) %>%
+#   group_by(Appt.YearQtr, Appt.Month, New.PT3) %>%
+#   summarise(monthly_vol = sum(monthly_vol)) %>%
+#   mutate(perc = percent(monthly_vol/sum(monthly_vol),0))
+#   
+#   
+#   monthOptions <- c("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+#   
+#   ggplot(dept_vol, aes(x= factor(Appt.Month, levels = monthOptions),
+#                        y=monthly_vol, group=Visit.Method, fill=Visit.Method))+
+#     geom_bar(position="stack",stat="identity", width=0.7)+
+#     facet_grid(.~Appt.YearQtr, scales = "free", space = "free_x") + 
+#     scale_fill_manual(values=c("#212070","#d80b8c","#00aeef","#7f7f7f","#ffc000","#7030a0","#5753d0","#5cd3ff"))+
+#     scale_y_continuous(limits=c(0, max((dept_vol %>% group_by(Appt.YearQtr, Appt.Month) %>% summarise(total = sum(monthly_vol)))$total)*1.1),
+#                        labels = scales::number_format(accuracy = 1),
+#                        expand = c(0,0))+
+#     labs(title = "Ambulatory Visit Volume",
+#          # subtitle = department,
+#          x = NULL, y = NULL, fill = "Site")+
+#     theme_bw()+
+#     theme(plot.title = element_text(hjust=0.5, face = "bold", size = 14),
+#             plot.subtitle = element_text(hjust=0.5, size = 12, face = "italic"),
+#             legend.position = "bottom",
+#             legend.text = element_text(size="8"),
+#             legend.direction = "horizontal",
+#             legend.title = element_blank(),
+#             axis.title = element_blank(),
+#             axis.text = element_text(size="10"),
+#             axis.title.x = element_blank(),
+#             axis.line = element_line(size = 0.3, colour = "black"))+
+#     geom_text(aes(label=paste0(prettyNum(monthly_vol, big.mark = ','),"\n","(",perc,")")), color="white", 
+#                 size=2, fontface="bold", position = position_stack(vjust = 0.5))+
+#     stat_summary(fun.y = sum, vjust = -1, aes(label=ifelse(..y.. == 0,"",prettyNum(..y.., big.mark = ',')), group = Appt.Month), geom="text", color="black", 
+#                  size=3)+
+#     guides(fill = guide_legend(nrow = 1))
+```
+
+
+
+```{r New Volume Processing, echo = FALSE, warning = FALSE, message = FALSE}
+
+new_vol <- data_subset %>%
+  filter(Appt.Status == "Arrived") %>%
+  mutate(Appt.MonNum = as.numeric(strftime(Appt.DateYear, format = "%m")),
+         Appt.Month = strftime(Appt.DateYear, format = "%b")) %>%
+  group_by(Campus, Department, Appt.Year, Appt.YearQtr, Appt.Month, Appt.MonthYear, New.PT3) %>%
+  summarise(monthly_vol = n())
+
+new_vol_mshs <- scheduling_data_raw %>%
+  filter(Appt.Status == "Arrived") %>%
+  mutate(Appt.MonNum = as.numeric(strftime(Appt.DateYear, format = "%m")),
+         Appt.Month = strftime(Appt.DateYear, format = "%b")) %>%
+  group_by(Campus, Appt.Year, Appt.YearQtr, Appt.Month, Appt.MonthYear, New.PT3) %>%
+  summarise(monthly_vol = n())
+
+```
+
+```{r Access Processing, echo = FALSE, warning = FALSE, message = FALSE}
+
+waitTime <- data_subset %>%
+  filter(Wait.Time >= 0) %>%
+  group_by(Campus, Appt.Made.MonthYear, New.PT2) %>%
+  mutate(med_wait_month = median(Wait.Time, na.rm = TRUE)) %>%
+  ungroup() %>%
+  group_by(Campus, Appt.Made.YearQtr, New.PT2) %>%
+  mutate(med_wait_quarter = median(Wait.Time, na.rm = TRUE)) %>%
+  mutate(group = case_when(Wait.Time >= 0 & Wait.Time <=7 ~ "0-7",
+                           Wait.Time >7 & Wait.Time <=14 ~ "8-14",
+                           Wait.Time >14 & Wait.Time <=30 ~ "15-30",
+                           TRUE ~ ">30")) %>%
+  ungroup() %>%
+  group_by(Campus, Appt.Made.Year, Appt.Made.YearQtr, Appt.Made.MonthYear, New.PT2, med_wait_month, med_wait_quarter, group) %>%
+  summarise(total = n())
+
+
+waitTime_specialty <- data_subset %>%
+  filter(Campus %in% c("MSBI", "MSH- AMBULATORY CARE", "MSH-MSDFP", "MSUS", "MSW")) %>%
+  filter(Wait.Time >= 0) %>%
+  group_by(Appt.Made.MonthYear, New.PT2) %>%
+  mutate(med_wait_month = median(Wait.Time, na.rm = TRUE)) %>%
+  ungroup() %>%
+  group_by(Appt.Made.YearQtr, New.PT2) %>%
+  mutate(med_wait_quarter = median(Wait.Time, na.rm = TRUE)) %>%
+  mutate(group = case_when(Wait.Time >= 0 & Wait.Time <=7 ~ "0-7",
+                           Wait.Time >7 & Wait.Time <=14 ~ "8-14",
+                           Wait.Time >14 & Wait.Time <=30 ~ "15-30",
+                           TRUE ~ ">30")) %>%
+  ungroup() %>%
+  group_by(Appt.Made.Year, Appt.Made.YearQtr, Appt.Made.MonthYear, New.PT2, med_wait_month, med_wait_quarter, group) %>%
+  summarise(total = n())
+
+
+waitTime_mshs <- scheduling_data_raw %>%
+  filter(Wait.Time >= 0) %>%
+  group_by(Appt.Made.MonthYear, New.PT2) %>%
+  mutate(med_wait_month = median(Wait.Time, na.rm = TRUE)) %>%
+  ungroup() %>%
+  group_by(Appt.Made.YearQtr, New.PT2) %>%
+  mutate(med_wait_quarter = median(Wait.Time, na.rm = TRUE)) %>%
+  mutate(group = case_when(Wait.Time >= 0 & Wait.Time <=7 ~ "0-7",
+                           Wait.Time >7 & Wait.Time <=14 ~ "8-14",
+                           Wait.Time >14 & Wait.Time <=30 ~ "15-30",
+                           TRUE ~ ">30")) %>%
+  ungroup() %>%
+  group_by(Appt.Made.Year, Appt.Made.YearQtr, Appt.Made.MonthYear, New.PT2, med_wait_month, med_wait_quarter, group) %>%
+  summarise(total = n())
+
+```
+
+
+```{r Digital Booking Processing, echo = FALSE, warning = FALSE, message = FALSE}
+
+
+entry_person <- c("Other: Appointment Import", "Cadence", "Other: Patient Access External Service", "Other: Stork", "Other: Provider mobile application", "Cerner - Keane")
+epic_features <- c("Other: FastPass - Hyperspace", "Epic Quick Reg", "FastPass", "Kiosk", "On My Way")
+find_a_doc <- c("Epic Open Scheduling", "Other: Patient Open Scheduling (External)")
+epic_mychart <- c("Other: Patient Open Scheduling Widget", "Other: Video Visit Queue - Mobile", "Other: Video Visit Queue - Web", 
+		    "Ticket - Direct Scheduling - MyChart Mobile","Ticket - Direct Scheduling - MyChart Web")
+consumer_digital <- c("Consumer Digital")
+zocdoc <- c("ZocDoc")
+
+data_subset <- data_subset %>%
+  mutate(SCHED_METHOD = trim(SCHED_METHOD)) %>%
+	mutate(Appt.Source.New = case_when(SCHED_METHOD %in% entry_person ~ "Entry Person",
+	                                   SCHED_METHOD %in% epic_features ~ "Epic Features",
+	                                   SCHED_METHOD %in% find_a_doc ~ "Find a Doc",
+	                                   SCHED_METHOD %in% epic_mychart ~ "Epic MyChart",
+	                                   SCHED_METHOD %in% consumer_digital ~ "Consumer Digital",
+	                                   SCHED_METHOD %in% zocdoc ~ "ZocDoc",
+	                                   TRUE ~ "Other"))
+  
+    
+
+digital_booking <- data_subset %>%
+  group_by(Campus, Department, Appt.Made.Year, Appt.Made.YearQtr, Appt.Made.MonthYear, New.PT2, Appt.Source.New) %>%
+  summarise(total = n()) %>%
+  mutate(digital_booking = case_when(Appt.Source.New %in% c("Epic Features", "Epic MyChart") ~ "MyMS/MyChart",
+                                     Appt.Source.New %in% c("ZocDoc", "Find a Doc", "Consumer Digital") ~ "Non-MyMS/MyChart",
+                                     TRUE ~ ""))
+
+
+digital_booking_mshs <- scheduling_data_raw %>%
+  group_by(Campus, Appt.Made.Year, Appt.Made.YearQtr, Appt.Made.MonthYear, New.PT2, Appt.Source.New) %>%
+  summarise(total = n()) %>%
+  mutate(digital_booking = case_when(Appt.Source.New %in% c("Epic Features", "Epic MyChart") ~ "MyMS/MyChart",
+                                     Appt.Source.New %in% c("ZocDoc", "Find a Doc", "Consumer Digital") ~ "Non-MyMS/MyChart",
+                                     TRUE ~ ""))
+```
+
+
+```{r Referral Processing, echo = FALSE, warning = FALSE, message = FALSE}
+
+referrals <- referral_vol %>%
+  group_by(ReceivedByDept, StartInstant, ApptStatusFinal) %>%
+  summarise(total = n()) %>%
+  mutate(Received.DateYear = as.Date(StartInstant, format="%Y-%m-%d"),
+         Appt.MonthYear = format(Received.DateYear, "%Y-%m"), ## Create month - year column
+         Appt.YearQtr = as.yearqtr(Received.DateYear),
+         Appt.Year = format(Received.DateYear, "%Y")) %>%
+  group_by(ReceivedByDept, Appt.Year, Appt.YearQtr, Appt.MonthYear, ApptStatusFinal) %>%
+  summarise(total = n()) %>%
+  rename(Department = ReceivedByDept)
+
+
+depts <- monthly_vol %>% group_by(Campus, Department, Appt.YearQtr, Appt.MonthYear) %>% summarise(total = n()) %>% dplyr::select(-total)
+
+referrals <- left_join(depts, referrals)
+
+
+referrals_mshs <- referral_vol %>%
+  group_by(ReceivedBySite, StartInstant, ApptStatusFinal) %>%
+  summarise(total = n()) %>%
+  mutate(Received.DateYear = as.Date(StartInstant, format="%Y-%m-%d"),
+         Appt.MonthYear = format(Received.DateYear, "%Y-%m"), ## Create month - year column
+         Appt.YearQtr = as.yearqtr(Received.DateYear),
+         Appt.Year = format(Received.DateYear, "%Y")) %>%
+  group_by(ReceivedBySite, Appt.Year, Appt.YearQtr, Appt.MonthYear, ApptStatusFinal) %>%
+  summarise(total = n()) 
+
+```
+
+
+```{r Payer Mix, echo = FALSE, warning = FALSE, message = FALSE}
+
+payer_mix <- data_subset %>%
+  filter(Appt.Status == "Arrived") %>%
+  group_by(Campus, Department, Appt.Year, Appt.YearQtr, Appt.Month, Appt.MonthYear, Coverage) %>%
+  summarise(total = n()) 
+
+payer_mix_mshs <- scheduling_data_raw %>%
+  filter(Appt.Status == "Arrived") %>%
+  group_by(Campus, Appt.Year, Appt.YearQtr, Appt.Month, Appt.MonthYear, Coverage) %>%
+  summarise(total = n()) 
+
+```
+
+
+```{r Data Export, echo = FALSE, warning = FALSE, message = FALSE}
+
+data_list <- list("Volume" = monthly_vol,
+                  "Volume MSHS" = monthly_vol_mshs,
+                  "New Volume" = new_vol,
+                  "New Volume MSHS" = new_vol_mshs,
+                  "Wait Time" = waitTime,
+                  "Wait Time MSHS" = waitTime_mshs,
+                  "Referrals" = referrals,
+                  "Referrals MSHS" = referrals_mshs,
+                  "Payer Mix" = payer_mix,
+                  "Payer Mix MSHS" = payer_mix_mshs)
+
+data_list <- list("Digital" = digital_booking,
+                  "Digital MSHS" = digital_booking_mshs)
+
+data_list <- list("Wait Time" = waitTime,
+                  "Wait Time Specialty" = waitTime_specialty,
+                  "Wait Time MSHS" = waitTime_mshs) 
+
+require(openxlsx)
+write.xlsx(data_list, "OBGYN_MP_Report Wait Time.xlsx")
+
+```
+
